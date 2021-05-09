@@ -1,0 +1,62 @@
+
+
+
+
+```{r primaries_turnout, message=FALSE}
+
+primaries <- read_csv("../data/primaries_2020.csv", skip = 1) %>% 
+  clean_names() %>% 
+  select(1:11) %>% 
+  rename(vep_turnout = vep_total_ballots_counted,
+         vep = voting_eligible_population_vep,
+         vap = voting_age_population_vap,
+         total_ballots = total_ballots_counted) %>% 
+  mutate(state = str_replace(state, " \\(.*\\)", ""),
+         state = case_when(state == "District of Columbia" ~ "DC",
+                           TRUE ~ state.abb[match(state, state.name)]),
+         vep_turnout = str_remove(vep_turnout, "%") %>% as.numeric()) %>% 
+  mutate_at(vars(vep, vap, democrat, republican, minor, total_ballots), ~ as.numeric(gsub(',', '', .)))  %>%
+  drop_na(state) %>% 
+  filter(election_type != "State Primary",
+         election_type != "Convention",
+         state != "State") %>% 
+  select(state, vep_turnout) %>% 
+  rename(primary_turnout_2020 = vep_turnout)
+
+# want to compare 2012 primary vs general turnout
+
+turnout_2012 <- read_csv("../data/general_turnout_2012.csv", skip = 1) %>% 
+  rename(state = X1) %>% 
+  clean_names() %>% 
+  select(state, vep_highest_office) %>% 
+  filter(state != "United States") %>% 
+  mutate(state = case_when(state == "District of Columbia" ~ "DC",
+                           TRUE ~ state.abb[match(state, state.name)]),
+         vep_highest_office = str_remove(vep_highest_office, "%") %>% as.numeric()) %>% 
+  rename(general_turnout = vep_highest_office)
+
+# calculating difference between primary and general turnout, will add
+# difference to 2020 primary turnout
+
+turnout_diff <- read_csv("../data/primary_turnout_2012.csv", skip = 1) %>% 
+  clean_names() %>% 
+  rename(state = state_territory,
+         turnout = vep_total_ballots_counted) %>% 
+  group_by(state) %>% 
+  select(state, turnout) %>% 
+  mutate(state = str_replace(state, " \\(.*\\)", ""),
+         state = case_when(state == "District of Columbia" ~ "DC",
+                           TRUE ~ state.abb[match(state, state.name)]),
+         turnout = str_remove(turnout, "%") %>% as.numeric()) %>% 
+  group_by(state) %>% 
+  summarise(primary_turnout = mean(turnout, na.rm = T)) %>% 
+  drop_na(state) %>% 
+  inner_join(turnout_2012, by = "state") %>% 
+  mutate(diff_turnout_2012 = general_turnout - primary_turnout) %>% 
+  select(state, diff_turnout_2012) %>% 
+  inner_join(primaries) %>% 
+  mutate(pred_2020_turnout = primary_turnout_2020 + 0.75 * diff_turnout_2012) %>% 
+  select(state, pred_2020_turnout)
+
+```
+

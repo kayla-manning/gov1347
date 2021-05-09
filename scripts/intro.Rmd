@@ -1,0 +1,168 @@
+---
+title: "Blog"
+author: "Kayla Manning"
+date: "9/8/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+# loading necessary packages
+
+library(usmap)
+library(tidyverse)
+library(patchwork)
+library(gt)
+library(ggthemes)
+library(webshot)
+library(kableExtra)
+
+```
+
+
+```{r data, warning = FALSE, message=FALSE}
+
+# reading in datasets from our first lab
+
+popvote_df <- read_csv("../data/popvote_1948-2016.csv")
+pvstate_df <- read_csv("../data/popvote_bystate_1948-2016.csv")
+
+```
+
+
+```{r plot_2016, warning=FALSE}
+
+# doing difference between 2016 and 2012
+
+pv_swing_2016 <- pvstate_df %>%
+  filter(year %in% c(2012, 2016)) %>%
+  group_by(state) %>%
+  arrange(year, .by_group = TRUE) %>%
+  select(state, year, D_pv2p, R_pv2p) %>% 
+  pivot_wider(names_from = year, values_from = c(D_pv2p, R_pv2p)) %>% 
+  mutate(swing_margin = D_pv2p_2016 / (D_pv2p_2016 + R_pv2p_2016) -
+           D_pv2p_2012 / (D_pv2p_2012 + R_pv2p_2012))
+
+# plotting data, modified from lab code
+
+plot_usmap(data = pv_swing_2016, regions = "states", 
+           values = "swing_margin", labels = TRUE) +
+    scale_fill_gradient2(
+      high = "blue", 
+      mid = "white",
+      low = "red",
+      breaks = c(-0.1,-0.05,0.05,0.1), 
+      limits = c(-0.15,0.15),
+      name = "Change in Proportion \nof Democratic Votes"
+    ) +
+    theme_void() +
+  labs(title = "Electoral Swing from 2012 to 2016")
+
+# saving to put it in my markdown file
+
+ggsave("../figures/intro/swing_map.jpg", height = 5)
+
+```
+
+
+```{r big_dem_change_2016, message=FALSE}
+
+# finding top 10 change in Democrat note that GA & TX are creeping closer to
+# turning blue UT change may just be because Mitt Romney ran in 2012
+
+pv_swing_2016 %>% 
+  select(state, D_pv2p_2012, D_pv2p_2016, swing_margin) %>% 
+  filter((D_pv2p_2012 > 45 & D_pv2p_2012 < 55) |
+         (D_pv2p_2016 > 45 & D_pv2p_2016 < 55)) %>% 
+  
+  # rounding the numbers in the table and converting the swing margin to
+  # increase ease of readability
+  
+  mutate(swing_margin = swing_margin * 100) %>% 
+  mutate_if(is.numeric, ~round(., 2)) %>% 
+  arrange(desc(swing_margin)) %>% 
+  ungroup() %>% 
+  gt() %>% 
+  tab_header("Electoral Swing in Battleground States from 2012 to 2016",
+             "Proportions of the Two-Party Vote") %>% 
+  tab_footnote(
+    "Difference in the Democratic percentage of the two-party vote from 2012 to 2016",
+    cells_column_labels(vars(swing_margin))
+    ) %>% 
+  cols_label(
+    state = "State",
+    D_pv2p_2012 = "Democratic Vote \nin 2012 (%)",
+    D_pv2p_2016 = "Democratic Vote \nin 2016 (%)",
+    swing_margin = "Change in Share \nof Democratic Vote (%)"
+  ) %>% 
+  gtsave("../figures/intro/swing_table.html")
+
+```
+
+```{r swing_table_graph}
+
+# trying to get the info from the table into a graph that shows vote share in
+# both years as well as change
+
+pv_swing_2016 %>% 
+  select(state, D_pv2p_2012, D_pv2p_2016, swing_margin) %>% 
+  filter((D_pv2p_2012 > 45 & D_pv2p_2012 < 55) |
+         (D_pv2p_2016 > 45 & D_pv2p_2016 < 55)) %>% 
+  pivot_longer(2:3, names_to = "year") %>% 
+  mutate(year = str_remove(year, "D_pv2p_"),
+         swing_margin = swing_margin * 100,
+         state = as_factor(state),
+         vote_dem = ifelse(value > 50, 1, 0) %>% as_factor())  %>% 
+  group_by(state) %>% 
+  ggplot(aes(value, fct_reorder(state, value), shape = year, color = vote_dem, group = state)) +
+  geom_point() +
+  geom_line(col = "gray") +
+  scale_x_continuous(limits = c(40, 60)) +
+  geom_vline(xintercept = 50) +
+  scale_color_manual(values = c("red", "blue"),
+                     labels = c("Republican", "Democrat"),
+                     name = "Popular Vote Winner") +
+  scale_shape_manual(values = c(1, 16),
+                     name = "Year") +
+  theme_classic() +
+  labs(title = "Electoral Swing in Battleground States",
+       x = "Democratic Percentage of Two-Party Vote",
+       y = "State")
+  
+ggsave("../figures/intro/swing_point_line.jpg")
+
+
+```
+
+
+```{r margin_graph}
+
+pv_swing_2016 %>% 
+  select(state, D_pv2p_2012, D_pv2p_2016, swing_margin) %>% 
+  filter((D_pv2p_2012 > 45 & D_pv2p_2012 < 55) |
+         (D_pv2p_2016 > 45 & D_pv2p_2016 < 55)) %>%
+  
+  # rounding the numbers in the table and converting the swing margin to
+  # increase ease of readability
+  
+  mutate(swing_margin = swing_margin * 100,
+         toward_dem = as.factor(ifelse(swing_margin > 0, 1, 0)),
+         state = as_factor(state)) %>%
+  ggplot(aes(fct_reorder(state, swing_margin), swing_margin, fill = toward_dem)) + 
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("blue", "red")) +
+  theme_classic() + 
+  labs(title = "Magnitude of Electoral Swing in Battleground States",
+       y = "Change in Democratic Percentage of Two-Party Vote from 2012 to 2016",
+       x = "State") +
+  scale_y_continuous(limits = c(-8.5, 8.5), breaks = seq(-8, 8, 2)) +
+  theme(legend.position = "none")
+
+ggsave("../figures/intro/swing_bars.jpg")
+
+```
+
+
+

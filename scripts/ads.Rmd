@@ -1,0 +1,485 @@
+---
+title: "Blog"
+author: "Kayla Manning"
+date: "9/8/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+# loading necessary packages
+
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(broom)
+library(scales)
+library(usmap)
+library(gt)
+library(ggpubr)
+
+# getting data for my model of choice thus far
+
+economy <- read_csv("../data/econ.csv") %>% 
+  clean_names()
+approval <- read_csv("../data/q3_approval.csv")
+all_polls <- read_csv("../data/pollavg_1968-2016.csv")
+popvote_state <- read_csv("../data/popvote_bystate_1948-2016.csv")
+popvote <- read_csv("../data/popvote_1948-2016.csv")
+
+vote_econ <- popvote %>% 
+  full_join(economy, by = "year") %>% 
+  full_join(all_polls %>% 
+              filter(weeks_left == 4) %>% 
+              group_by(year, party) %>% 
+              summarise(avg_support = mean(avg_support)))
+
+# reading and joining ads data
+
+creative <- read_csv("../data/ad_creative_2000-2012.csv")
+campaigns <- read_csv("../data/ad_campaigns_2000-2012.csv")
+ads_2020 <- read_csv("../data/ads_2020.csv")
+vep <- read_csv("../data/vep_1980-2016.csv")
+ads <- creative %>% 
+  inner_join(campaigns)
+
+# data for my state-by-state model
+
+voters <- vote_econ %>% 
+  inner_join(vep, by = "year")
+
+# 538 updating polls
+
+{
+  poll_2020_url <- "https://projects.fivethirtyeight.com/2020-general-data/presidential_poll_averages_2020.csv"
+  poll_2020_df <- read_csv(poll_2020_url)
+  
+  elxnday_2020 <- as.Date("11/3/2020", "%m/%d/%Y")
+  dnc_2020 <- as.Date("8/20/2020", "%m/%d/%Y")
+  rnc_2020 <- as.Date("8/27/2020", "%m/%d/%Y")
+  
+  colnames(poll_2020_df) <- c("year","state","poll_date","candidate_name","avg_support","avg_support_adj")
+  
+  poll_2020_df <- poll_2020_df %>%
+    mutate(party = case_when(candidate_name == "Donald Trump" ~ "republican",
+                             candidate_name == "Joseph R. Biden Jr." ~ "democrat"),
+           poll_date = as.Date(poll_date, "%m/%d/%Y"),
+           days_left = round(difftime(elxnday_2020, poll_date, unit="days")),
+           weeks_left = round(difftime(elxnday_2020, poll_date, unit="weeks")),
+           before_convention = case_when(poll_date < dnc_2020 & party == "democrat" ~ TRUE,
+                                         poll_date < rnc_2020 & party == "republican" ~ TRUE,
+                                         TRUE ~ FALSE)) %>%
+    filter(!is.na(party)) %>%
+    filter(state == "National")
+}
+
+```
+
+
+```{r google_trends_data}
+
+# pulled this data from google trends on 10/8/2020
+
+region_search <- read_csv("../data/google_trends/search_by_region.csv", skip = 1) %>% 
+  clean_names() %>% 
+  rename() %>% 
+  rename(trump = donald_trump_10_8_19_10_8_20,
+         biden = joe_biden_10_8_19_10_8_20,
+         pence = mike_pence_10_8_19_10_8_20,
+         harris = kamala_harris_10_8_19_10_8_20) %>% 
+  mutate_at(vars(trump, biden, pence, harris), ~ as.numeric(str_remove(., "%")))
+
+trends_time <- read_csv("../data/google_trends/interest_over_time.csv", skip = 1) %>% 
+  clean_names() %>% 
+  rename_at(vars(matches("_united_states")), ~ str_remove(., "_united_states")) %>% 
+  mutate(kamala_harris = recode(kamala_harris, "<1" = "0.25"),
+         mike_pence = recode(mike_pence, "<1" = "0.25")) %>% 
+  mutate_at(vars(joe_biden, kamala_harris, mike_pence), ~ as.numeric(.))
+
+trump_related <- read_csv("../data/google_trends/trump_related.csv", skip = 1) %>% 
+  clean_names()
+biden_related <- read_csv("../data/google_trends/biden_related.csv", skip = 1) %>% 
+  clean_names()
+harris_related <- read_csv("../data/google_trends/harris_related.csv", skip = 1) %>% 
+  clean_names()
+pence_related <- read_csv("../data/google_trends/pence_related.csv", skip = 1) %>% 
+  clean_names()
+
+```
+
+
+```{r overall_spend}
+
+# how much do campaigns spend on social media ads? does social media influence
+# election outcomes? how will it influence 2020?
+# data from https://www.facebook.com/ads/library/?active_status=all&ad_type=political_and_issue_ads&country=US
+
+fb_all <- read_csv("../data/FacebookAdLibraryReport_2020-10-05_US_lifelong/FacebookAdLibraryReport_2020-10-05_US_lifelong_advertisers.csv") %>% 
+  clean_names()
+
+person_spending <- fb_all %>% 
+  group_by(page_name) %>% 
+  summarise(count = n(),
+            spending = sum(amount_spent_usd)) %>% 
+  arrange(desc(spending)) %>% 
+  mutate(party = case_when(page_name %in% c("Donald J. Trump", "Mike Pence") 
+                           ~ "Republican Party",
+                           page_name %in% c("Joe Biden", "Kamala Harris")
+                           ~ "Democratic Party",
+                           page_name %in% c("Jo Jorgensen", "Spike Cohen")
+                           ~ "Libertarian Party",
+                           page_name %in% c("Howie Hawkins", "Angela Walker") 
+                           ~ "Green Party",
+                           page_name %in% c("Mike Bloomberg", "Tom Steyer")
+                           ~ "Other"),
+         position = case_when(page_name %in% c("Donald J. Trump", "Joe Biden",
+                                               "Jo Jorgenson", "Howie Hawkins")
+                              ~ "Presidential Candidate",
+                              page_name %in% c("Tom Steyer",
+                                               "Mike Bloomberg") ~ "Political Donor",
+                              page_name %in% c("Kamala Harris", "Mike Pence",
+                                               "Spike Cohen", "Angela Walker")
+                              ~ "Vice Presidential Candidate"),
+         position = fct_relevel(position, c("Presidential Candidate", 
+                                            "Vice Presidential Candidate"))) 
+
+person_spending %>% 
+  add_row(page_name = "Angela Walker", party = "Green Party", spending = 0,
+          position = "Vice Presidential Candidate") %>% 
+  filter(party %in% c("Republican Party", "Democratic Party", "Other")) %>% 
+  drop_na(party) %>% 
+  group_by(party) %>%  
+  slice(1:2) %>% 
+  ungroup() %>% 
+  mutate(page_name = as_factor(page_name),
+         party = as_factor(party),
+         party = fct_relevel(party, c("Republican Party", "Democratic Party", "Other Key Spenders")),
+         page_name = fct_reorder(page_name, spending)) %>% 
+  ggplot(aes(page_name, spending, fill = position)) +
+  geom_col() +
+  coord_flip() +
+  theme_minimal() +
+  scale_fill_manual(values = c("gray", "red3", "black")) +
+  facet_wrap(~ party, scales = "free_y", nrow = 5, shrink = FALSE) +
+  scale_y_continuous(labels = dollar_format(), limits = c(0, 110000000)) +
+  geom_text(aes(label = paste0("$",spending)), hjust = -0.1, size = 3) +
+  labs(title = "Key Spenders in Facebook Advertising",
+       caption = "From 5/7/2018-10/5/2020",
+       fill = "Title",
+       x = "",
+       y = "")
+
+ggsave("../figures/ads/top_fb_spenders.jpg")
+
+```
+
+```{r fb_spending}
+
+# want to look at spending in swing states
+
+# NYT classifies the following as swing states:
+# lean D: PA, MI, WI, NH, MN, AZ, NV, NB
+# toss up: OH, ME, FL, IO, GA, NC
+# lean R: TX
+
+states <- c("Texas", "Pennsylvania", "Michigan", "Wisconsin", "New Hampshire", "Montana",
+            "Arizona", "Nevada", "Nebraska", "Ohio", "Maine", "Florida", "Iowa", "Georgia", "North Carolina")
+state_data <- tibble(page_id = NA, page_name = NA, disclaimer = NA, amount_spent_usd = NA)
+
+for (i in 1:length(states)){
+  file <- file.path(paste0("../data/FacebookAdLibraryReport_2020-10-05_US_last_30_days/regions/FacebookAdLibraryReport_2020-10-05_US_last_30_days_", states[i],".csv"))
+  new_state_data <- read_csv(file, col_types = 
+    cols(
+      `Page ID` = col_double(),
+      `Page Name` = col_character(),
+      Disclaimer = col_character(),
+      `Amount Spent (USD)` = col_double()
+    )) %>% 
+    clean_names() %>% 
+    mutate(state = states[i])
+  
+  state_data <- bind_rows(state_data, new_state_data)
+}
+
+state_data <- drop_na(state_data, state)
+
+state_totals <- state_data %>% 
+  group_by(state, page_name) %>% 
+  summarise(total_spend = sum(amount_spent_usd)) %>% 
+  arrange(desc(total_spend)) %>% 
+  drop_na(total_spend)
+
+# plotting total spending
+
+state_totals %>% 
+  filter(page_name %in% c("Joe Biden", "Donald J. Trump")) %>% 
+  mutate(state = as_factor(state)) %>% 
+  ggplot(aes(fct_reorder(state, total_spend), total_spend, fill = page_name)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  theme_minimal() +
+  scale_fill_manual(values = c("red3", muted("blue"))) +
+  labs(fill = "Candidate",
+       x = "",
+       y = "",
+       title = "Facebook Advertisement Spending in Swing States",
+       caption = "Data from 9/6/2020-10/5/2020") +
+  scale_y_continuous(labels = dollar_format())
+
+ggsave("../figures/ads/fb_spend_swing.jpg")
+
+# Biden ad margin map in swing states 
+
+biden_swing <- state_totals %>% 
+  filter(page_name %in% c("Joe Biden", "Donald J. Trump")) %>% 
+  pivot_wider(names_from = page_name, values_from = total_spend) %>% 
+  replace(is.na(.), 0) %>% 
+  mutate(biden_margin = `Joe Biden` - `Donald J. Trump`)
+
+fb_map <- plot_usmap(regions = "states", data = biden_swing,
+           values = "biden_margin", include = states) +
+  scale_fill_gradient2(
+    high = muted("blue"),
+    mid = "white",
+    low = "red3",
+    limits = c(-2000000, 2000000)
+  ) +
+  theme_void() +
+  labs(title = "Facebook",
+       fill = "Biden's Spending Margin ($)",
+       caption = "Data from 9/6/2020-10/5/2020")
+
+
+```
+
+
+```{r tv_ads}
+
+# look at https://mediaproject.wesleyan.edu/releases-100120/#table1 for inspiration
+
+swing_tv <- ads_2020 %>% 
+  mutate(state = state.name[match(state, state.abb)]) %>% 
+  filter(period_startdate == "2020-09-05",
+         state %in% states) %>% 
+  mutate(biden_margin = biden_airings - trump_airings)
+
+tv_map <- plot_usmap(data = swing_tv, regions = "states", values = "biden_margin", include = states) +
+  scale_fill_gradient2(
+    high = muted("blue"),
+    mid = "white",
+    low = "red3",
+    limits = c(-20000, 20000)
+  ) +
+  theme_void() +
+  labs(title = "Television",
+       fill = "Biden's Margin",
+       caption = "Data from 9/5/2020-9/27/2020")
+
+
+```
+
+```{r ad_analysis}
+
+# analyzing type of ads over the years
+
+creative <- read_csv("../data/ad_creative_2000-2012.csv")
+campaigns <- read_csv("../data/ad_campaigns_2000-2012.csv")
+
+ads_2000s <- creative %>% 
+  inner_join(campaigns, by = c("creative", "party", "cycle"))
+
+# Democrats appear to outspend Republicans in the year prior to the election,
+# but Republicans outspend Democrats in election year
+
+ads_2000s %>% 
+  mutate(year = year(air_date),
+         month = month(air_date)) %>% 
+  group_by(year, party) %>% 
+  summarise(total_cost = mean(total_cost)) %>% 
+  ggplot(aes(year, total_cost, color = party)) +
+  geom_point() +
+  geom_line() +
+  scale_y_continuous(limits = c(0, 35000)) +
+  theme_minimal() +
+  scale_color_manual(values = c(muted("blue"), "red3"),
+                     labels = c("Democrat", "Republican")) +
+  scale_x_continuous(labels = c(2000, 2004, 2008, 2012),
+                     breaks = c(2000, 2004, 2008, 2012)) +
+  labs(title = "Spending on Television Political Advertisements",
+       x = "",
+       y = "Average Spending Per Ad ($)",
+       color = "Party") 
+
+ggsave("../figures/ads/tv_avg_spend.jpg")
+
+# creating a function to view the top issues for each party in each year
+
+top_issues <- function(x, y){
+  
+  title <- paste0("Top 3 ", y %>% str_to_title(), " Issues in ", x)
+  
+  ads_2000s %>% 
+    mutate(year = year(air_date)) %>% 
+    filter(year == x,
+           party == y) %>% 
+    group_by(ad_issue) %>% 
+    summarise(issue = n()) %>% 
+    arrange(desc(issue)) %>% 
+    slice(1:3) %>% 
+    gt() %>% 
+    tab_header(title)
+}
+top_issues(2008, "republican")
+
+
+
+```
+
+```{r google_ads}
+
+files <- c("updated", "top-keywords-history", "geo-spend", "campaign-targeting",
+           "advertiser-weekly-spend", "advertiser-stats", "advertiser-geo-spend", 
+           "advertiser-declared-stats")
+
+google_df <- list()
+
+for (i in files){
+  file <- paste0("../data/google_ads/google-political-ads-", i, ".csv")
+  name <- paste0("google_ad", files[i])
+  assign(i, read_csv(file) %>% clean_names())
+}
+
+
+# looking at spending by candidate
+
+ad_geo_spend <- `advertiser-geo-spend`
+
+candidate_google_spend <- ad_geo_spend %>% 
+  filter(country == "US") %>% 
+  rename(state = country_subdivision_primary) %>% 
+  mutate(candidate = case_when(str_detect(advertiser_name, 
+                                          regex("biden", ignore_case = TRUE)) ~ "Biden",
+                               str_detect(advertiser_name, 
+                                          regex("trump", ignore_case = TRUE)) ~ "Trump")) %>% 
+  drop_na(candidate) %>% 
+  select(advertiser_id, advertiser_name, candidate, state, spend_usd)
+
+google_spend_margin <- candidate_google_spend %>% 
+  group_by(state, candidate) %>% 
+  summarise(total_spend = sum(spend_usd), .groups = "drop") %>% 
+  pivot_wider(names_from = candidate, values_from = total_spend) %>% 
+  mutate(biden_margin = Biden - Trump) %>% 
+  plot_usmap(data = ., regions = "states", include = states, values = "biden_margin") +
+  scale_fill_gradient2(low = "red3",
+                      mid = "white",
+                      high = muted("blue")) +
+  labs(fill = "Biden's Google Spending Margin",
+       title = "Google",
+       caption = "Data from 5/31/2018-10/8/2020") +
+  theme_void()
+
+fb_tv <- ggarrange(fb_map + theme(legend.position = "none"), 
+          tv_map + theme(legend.position = "none"))  
+
+ggarrange(fb_tv,
+          google_spend_margin + theme(legend.position = "none"),
+          ncol = 1) %>% 
+  annotate_figure(top = text_grob("Relative Advertising in Battleground States", size = 20))
+
+ggsave("../figures/ads/ad_maps.jpg")
+
+```
+
+```{r both_mod_by_state}
+
+library(rvest)
+
+url <- "https://state.1keydata.com/state-electoral-votes.php"
+
+
+ev <- read_html(url, as.data.frame=T, stringsAsFactors = TRUE)
+#We create a function with read_html to read the web page.
+ev %>%  
+        html_nodes("table") %>% 
+        #Here, we indicate that this is the table we want to extract.
+        .[[3]] %>% 
+        #Here we put of which table of the HTML is about, in our example it is the third table of the web.
+        html_table(fill=T) -> ev
+        #We save it in a CSV.
+ev <- ev %>% 
+  row_to_names(row_number = 1)
+
+ev_2half <- ev %>% 
+  select(3:4)
+
+ev <- ev %>% 
+  select(1:2) %>% 
+  bind_rows(ev_2half) %>% 
+  clean_names() %>% 
+  rename(state = us_state)
+
+
+state_votes <- read_csv("../data/popvote_bystate_1948-2016.csv") %>% 
+  clean_names() %>% 
+  pivot_longer(cols = 6:7, names_to = "party") %>% 
+  mutate(party = case_when(party == "r_pv2p" ~ "republican",
+                           party == "d_pv2p" ~ "democrat")) %>% 
+  rename("pv2p" = value) %>% 
+  full_join(economy, by = "year") %>% 
+  full_join(all_polls %>% 
+              filter(weeks_left == 4) %>% 
+              group_by(year, party) %>% 
+              summarise(avg_support = mean(avg_support))) %>% 
+  inner_join(vep, by = c("year", "state")) %>% 
+  full_join(vote_econ %>% select(year, party, incumbent, incumbent_party), by = c("year", "party"))
+
+state_predictions <- state_votes %>% 
+    filter(quarter == 1) %>%
+  group_by(state) %>% 
+  nest() %>% 
+  mutate(mod = map(data, ~lm(pv2p ~ gdp_growth_qt + avg_support * 
+                               incumbent, 
+                       data = .)),
+         tidy = map(mod, ~tidy(.))) %>% 
+  unnest(tidy) %>% 
+  mutate(q1_gdp = vote_econ %>% filter(year == 2020, quarter == 1) %>%
+           pull(gdp_growth_qt),
+         trump_support = trump_poll,
+         biden_support = biden_poll) %>% 
+  select(state, term, estimate, q1_gdp, trump_support, biden_support) %>% 
+  pivot_wider(names_from = term, values_from = estimate) %>% 
+  unnest(`(Intercept)`, gdp_growth_qt, avg_support, incumbentTRUE,
+         `avg_support:incumbentTRUE`) %>% 
+  mutate(trump_predict = `(Intercept)` + q1_gdp * gdp_growth_qt + 
+           trump_support * (avg_support + `avg_support:incumbentTRUE`) + 
+           incumbentTRUE,
+         biden_predict = `(Intercept)` + q1_gdp * gdp_growth_qt + 
+           biden_support * avg_support) %>% 
+  select(state, trump_predict, biden_predict) %>% 
+  mutate(winner = ifelse(trump_predict > biden_predict, "Trump", "Biden")) %>% 
+  inner_join(ev) %>% 
+  mutate(electoral_votes = as.numeric(electoral_votes),
+         trump_ev = case_when(winner == "Trump" ~ electoral_votes,
+                              winner == "Biden" ~ 0),
+         biden_ev = case_when(winner == "Trump" ~ 0,
+                              winner == "Biden" ~ electoral_votes)) %>% 
+  ungroup() 
+
+# plotting projected victories
+
+state_predictions %>% 
+  summarise(trump_ev = sum(trump_ev),
+            biden_ev = sum(biden_ev))
+plot_usmap(data = state_predictions %>% drop_na(winner), regions = "states", values = "winner") +
+  scale_fill_manual(values = c(muted("blue"), "red3"), breaks = c("Biden", "Trump")) +
+  theme_void() +
+  labs(fill = "Winner") +
+  labs(title = "Predicted 2020 Election Results",
+       caption = "This model uses a multiple linear regression to map two-party vote share 
+       from Q1 GDP growth, poll numbers from 4 weeks out, incumbency status, 
+       and the interaction between incumbency and poll numbers")
+
+ggsave("../figures/ads/prediction_map.jpg")
+
+```
